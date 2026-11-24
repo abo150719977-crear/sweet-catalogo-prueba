@@ -428,6 +428,9 @@ function subirImagen(x){if(x.cloudImageUrl&&x.i===x.cloudImageUrl)return Promise
 function guardarNube(manual){if(!cloudToken)return Promise.reject(new Error('Inicia sesión como administrador para guardar en la nube.'));if(cloudSaving){cloudPending=true;return Promise.resolve()}cloudSaving=true;if(manual)msg('Guardando catálogo en la nube…');var ids=[];return Promise.all(lista.map(function(x,i){x.cloudId=x.cloudId||nuevoUUID();ids.push(x.cloudId);return subirImagen(x).then(function(url){var precio=num(x.p);return {id:x.cloudId,name:x.n,description:x.d||'',price:precio==null?0:precio,image_url:url||null,category:x.category||'',active:true,sort_order:i,updated_at:new Date().toISOString()}})})).then(function(rows){return cloudFetch(SUPABASE_URL+'/rest/v1/products?on_conflict=id',{method:'POST',headers:Object.assign(cloudHeaders(cloudToken),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),body:JSON.stringify(rows)}).then(function(r){return r.text().then(function(t){var j;try{j=JSON.parse(t)}catch(e){j={message:t}}if(!r.ok)throw new Error(cloudError(j)+' [HTTP '+r.status+']');return cloudRows(cloudToken)})})}).then(function(existing){var keep={};ids.forEach(function(id){keep[id]=true});var gone=existing.filter(function(x){return !keep[x.id]});return Promise.all(gone.map(function(x){return cloudFetch(SUPABASE_URL+'/rest/v1/products?id=eq.'+encodeURIComponent(x.id),{method:'DELETE',headers:cloudHeaders(cloudToken)}).then(function(r){if(!r.ok)throw new Error('No se pudo sincronizar la eliminación de un producto [HTTP '+r.status+']')})}))}).then(function(){cloudHasData=true;guarda();if(manual)msg('Catálogo sincronizado correctamente. Los cambios ya están guardados en la nube.',true)}).catch(function(e){if(manual)msg('No se pudo guardar: '+e.message,false);throw e}).finally(function(){cloudSaving=false;if(cloudPending){cloudPending=false;programarGuardadoNube()}})}
 function programarGuardadoNube(){if(!cloudToken||!cloudHasData)return;clearTimeout(cloudTimer);cloudTimer=setTimeout(function(){guardarNube(false).catch(function(e){console.error('Error de sincronización:',e);msg('Error al sincronizar: '+e.message,false)})},1100)}
 function entrarSupabase(email,password){return cloudFetch(SUPABASE_URL+'/auth/v1/token?grant_type=password',{method:'POST',headers:{'apikey':SUPABASE_KEY,'Content-Type':'application/json'},body:JSON.stringify({email:email,password:password})}).then(function(r){return r.text().then(function(t){var j;try{j=JSON.parse(t)}catch(e){j={message:t}}if(!r.ok)throw new Error(cloudError(j)+' [HTTP '+r.status+']');return j})}).then(function(data){if(!data.access_token)throw new Error('Supabase no devolvió una sesión válida.');cloudToken=data.access_token;return cloudRows(cloudToken).then(function(rows){cloudHasData=rows.length>0;if(rows.length){lista=cloudMap(rows);guarda();pinta()}return true})})}
+function tokenRecuperacion(){var h=new URLSearchParams((location.hash||'').replace(/^#/,''));return h.get('type')==='recovery'?h.get('access_token'):null}
+function enviarRecuperacion(email){return cloudFetch(SUPABASE_URL+'/auth/v1/recover?redirect_to='+encodeURIComponent(location.origin+location.pathname),{method:'POST',headers:{'apikey':SUPABASE_KEY,'Content-Type':'application/json'},body:JSON.stringify({email:email})}).then(function(r){return r.text().then(function(t){var j={};try{j=JSON.parse(t)}catch(e){}if(!r.ok)throw new Error(cloudError(j)+' [HTTP '+r.status+']')})})}
+function guardarNuevaClave(token,password){return cloudFetch(SUPABASE_URL+'/auth/v1/user',{method:'PUT',headers:{'apikey':SUPABASE_KEY,'Authorization':'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({password:password})}).then(function(r){return r.text().then(function(t){var j={};try{j=JSON.parse(t)}catch(e){}if(!r.ok)throw new Error(cloudError(j)+' [HTTP '+r.status+']')})})}
 try{var s=JSON.parse(localStorage.getItem(KEY)||'null');
   if(s&&s.v===VER&&Array.isArray(s.l)){lista=s.l.map(function(x){if(x&&x.b)x.i=baseImg[x.id];return x}).filter(function(x){return x&&x.i&&x.n!=null});/* no se recupera ninguna clave local */}}catch(e){}
 function guarda(){try{localStorage.setItem(KEY,JSON.stringify({v:VER,c:clave,l:lista.map(function(x){return x.b?{id:x.id,n:x.n,d:x.d,p:x.p,a:x.a,b:1}:x})}));return true}catch(e){return false}}
@@ -547,12 +550,22 @@ function vistaA(){
   var m=E('div','msg');m.id='adm-msg';
   if(!logged){
     box.appendChild(E('h2',null,'Administrador'));
+    var recovery=tokenRecuperacion();
+    if(recovery){
+      box.appendChild(E('p','nota','Enlace de recuperación validado. Elige una contraseña nueva.'));
+      var np=E('input');np.type='password';np.autocomplete='new-password';np.placeholder='Nueva contraseña (mínimo 8 caracteres)';
+      var np2=E('input');np2.type='password';np2.autocomplete='new-password';np2.placeholder='Repite la nueva contraseña';
+      campo(box,'Nueva contraseña',np);campo(box,'Confirmar contraseña',np2);
+      var save=B('Guardar nueva contraseña','p',function(){if(np.value.length<8){msg('La contraseña debe tener al menos 8 caracteres.',false);return}if(np.value!==np2.value){msg('Las contraseñas no coinciden.',false);return}save.disabled=true;guardarNuevaClave(recovery,np.value).then(function(){history.replaceState(null,'',location.pathname+location.search);msg('Contraseña actualizada. Ahora inicia sesión con la nueva contraseña.',true);vistaA()}).catch(function(e){msg('No se pudo cambiar la contraseña: '+e.message,false)}).finally(function(){save.disabled=false})});
+      var rb=E('div','barra');rb.appendChild(save);box.appendChild(rb);box.appendChild(m);return;
+    }
     var em=E('input');em.type='email';em.autocomplete='username';em.placeholder='Correo de administrador';
     var pw=E('input');pw.type='password';pw.autocomplete='current-password';pw.placeholder='Contraseña de Supabase';
     campo(box,'Correo electrónico',em);campo(box,'Contraseña',pw);
     var go=B('Entrar','p',function(){if(!em.value.trim()||!pw.value){msg('Introduce tu correo y contraseña.',false);return}go.disabled=true;entrarSupabase(em.value.trim(),pw.value).then(function(){logged=true;vistaA();msg('Sesión iniciada. Catálogo conectado a la nube.',true)}).catch(function(e){cloudToken=null;msg(e.message,false)}).finally(function(){go.disabled=false})});
+    var forgot=B('Olvidé mi contraseña','',function(){if(!em.value.trim()){msg('Escribe primero tu correo electrónico.',false);em.focus();return}forgot.disabled=true;enviarRecuperacion(em.value.trim()).then(function(){msg('Enviamos un enlace para cambiar la contraseña. Abre el correo en este mismo dispositivo.',true)}).catch(function(e){msg(e.message,false)}).finally(function(){forgot.disabled=false})});
     pw.onkeydown=function(e){if(e.key==='Enter')go.click()};em.onkeydown=function(e){if(e.key==='Enter')pw.focus()};
-    var ac=E('div','barra');ac.appendChild(go);box.appendChild(ac);box.appendChild(m);
+    var ac=E('div','barra');ac.appendChild(go);ac.appendChild(forgot);box.appendChild(ac);box.appendChild(m);
     setTimeout(function(){em.focus()},60);return;
   }
   box.appendChild(E('h2',null,'Panel de ajustes'));
@@ -591,6 +604,7 @@ function vistaA(){
 $('adm-abrir').onclick=function(){A.hidden=false;document.documentElement.style.overflow='hidden';A.scrollTop=0;vistaA()};
 
 pinta();pintaC();cargarPublico();
+if(tokenRecuperacion()){A.hidden=false;document.documentElement.style.overflow='hidden';vistaA()}
 })();
 </script>
 </body>
